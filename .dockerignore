@@ -1,0 +1,14 @@
+# Keeps the build context small and, more importantly, keeps secrets and local-only state out
+# of the image entirely — .env has real API keys in it; it must never end up baked into a
+# layer that could be pushed to a registry.
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+.env
+.git
+.github
+.pytest_cache
+.mypy_cache
+.ruff_cache
+tests

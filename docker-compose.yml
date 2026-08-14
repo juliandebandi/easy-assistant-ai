@@ -1,0 +1,93 @@
+# Explicit project name — Compose otherwise defaults the project name to the current
+# directory's *basename*, which is "backend" here. That's a dangerously common folder name:
+# on this machine there's a second, unrelated project also checked out into a folder named
+# "backend" (a ChatBot repo), and its live containers/volumes/network were already registered
+# under project name "backend" before this compose file existed. Without an explicit name,
+# `docker compose up` here silently joins that other project's namespace — reusing its
+# `pgdata` volume (a *different* schema/dataset entirely) and its default network. Pin a name
+# that's unique to this repo so that can't happen, regardless of what any other folder on the
+# machine is called.
+name: ai-assistant-backend
+
+# One compose file for both local dev and the VPS deploy, rather than maintaining
+# docker-compose.yml + docker-compose.prod.yml in parallel. It works because every service
+# below declares *both* `build:` and `image:`:
+#   - Local dev runs `docker compose up --build`, which builds from the Dockerfile and tags
+#     the result with `image:`.
+#   - The VPS deploy (see .github/workflows/cd.yml) runs `docker compose pull` first — pulling
+#     the exact tag CI just pushed to GHCR under that same `image:` name — then
+#     `docker compose up -d`. Since an image already exists locally under that tag, compose
+#     uses it as-is instead of rebuilding, even though `build:` is still present. No Dockerfile
+#     or source tree needs to exist on the VPS at all.
+# DOCKER_IMAGE is unset in local .env, so it falls back to a purely local tag; the CD workflow
+# exports the real ghcr.io/... reference into the VPS's .env before pulling.
+
+services:
+  db:
+    # The official Postgres image doesn't include pgvector; this is Postgres 17 with the
+    # extension's files already installed, so `CREATE EXTENSION vector` (see
+    # migrations/versions/95337697bb6f_*.py) has something to enable instead of failing.
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-backend}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      # Bound to 127.0.0.1, not 0.0.0.0: exposed to the *host* so `alembic`/`psql`/tests can
+      # be run directly from this machine against `localhost:5432` (the `app`/`migrate`
+      # services reach it as `db:5432` over the compose network instead — two different
+      # hostnames for the same database depending on which side of the container boundary
+      # you're on, see the DATABASE_URL override below). On the VPS this same binding means
+      # Postgres is reachable from processes on the VPS itself but never from the public
+      # internet, regardless of whether the cloud firewall/security-group is configured
+      # correctly — the port simply isn't listening on the public interface at all.
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-backend}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Runs `alembic upgrade head` once and exits, rather than folding migrations into the app
+  # container's startup command. Kept separate so: (1) migration failures are visible as their
+  # own failed service instead of buried in app boot logs, and (2) if this ever scales to
+  # multiple app replicas, only one migration run happens — not N containers racing to alter
+  # the same schema concurrently.
+  migrate:
+    build: .
+    image: ${DOCKER_IMAGE:-ai-assistant-backend:local}
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-backend}
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  app:
+    build: .
+    image: ${DOCKER_IMAGE:-ai-assistant-backend:local}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Overrides the host-oriented value from .env (DATABASE_URL there points at `localhost`,
+      # which inside this container would mean "this container", not the `db` service).
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-backend}
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health/live')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  pgdata:

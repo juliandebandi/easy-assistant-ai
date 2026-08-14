@@ -1,0 +1,107 @@
+name: CD
+
+# Triggered by CI's completion rather than directly on `push: main` — using `workflow_run`
+# instead of duplicating the push trigger means a broken CI run can never be followed by a
+# deploy: this workflow only starts once CI has already finished, and the `if:` below checks
+# it finished successfully. The alternative (two independent `on: push` workflows) would let
+# CD start racing CI instead of depending on its outcome.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   VPS_HOST         - the VPS's IP or hostname
+#   VPS_USER         - SSH user to deploy as (a dedicated low-privilege deploy user, not root)
+#   VPS_SSH_KEY       - private half of a keypair whose public half is in that user's
+#                       ~/.ssh/authorized_keys on the VPS (generate a deploy-only keypair,
+#                       don't reuse a personal one)
+#   VPS_DEPLOY_PATH   - absolute path on the VPS containing a real `.env` (this is *not*
+#                       pushed by CD — see the ssh step below for why)
+# GHCR push needs no separate secret: `secrets.GITHUB_TOKEN` is minted automatically per run.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  build-and-push:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # Two tags for two different jobs: `:${{ github.sha }}` is what the deploy step
+          # below actually pins to — an immutable, unambiguous reference to exactly this
+          # commit's build, so "what's running on the VPS" is always answerable. `:latest`
+          # is a convenience pointer for anyone pulling the image manually; it's never what
+          # deploy uses, since "latest" silently means something different every time it's
+          # read.
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+          # Reuses GitHub Actions' own cache for Docker layers — the dependency-install layer
+          # from the Dockerfile (see the COPY pyproject.toml/uv.lock-first ordering there)
+          # is what this actually saves rebuilding on every push.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keeps the VPS's copy of docker-compose.yml in sync with this repo automatically. If
+      # this step didn't exist, a change to docker-compose.yml (a new service, a changed
+      # healthcheck) would deploy correctly once and then silently stop matching the repo on
+      # every subsequent deploy until someone remembered to copy the file by hand.
+      - name: Sync docker-compose.yml to the VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: docker-compose.yml
+          target: ${{ secrets.VPS_DEPLOY_PATH }}
+
+      - name: Pull the new image and restart
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd ${{ secrets.VPS_DEPLOY_PATH }}
+
+            # DOCKER_IMAGE is exported into the shell for this one command, never written into
+            # the VPS's .env file. Real docker-compose var-substitution reads shell env first
+            # and .env as a fallback, so this overrides the `${DOCKER_IMAGE:-ai-assistant-backend:local}`
+            # default in docker-compose.yml for exactly this deploy without needing to
+            # edit-then-restore a file that also holds real secrets (GEMINI_API_KEY,
+            # NOTION_API_KEY, DATABASE_URL). That real .env is expected to already exist at
+            # this path — provisioned once by hand over SSH, never by CD — since secrets don't
+            # belong passing through a CI log even indirectly.
+            export DOCKER_IMAGE=ghcr.io/${{ github.repository }}:${{ github.sha }}
+
+            docker compose pull
+            docker compose up -d
+
+            # A small VPS disk fills up fast if every deploy's superseded image layers stick
+            # around forever; -f skips the interactive confirmation prompt docker would
+            # otherwise block this non-interactive SSH session on.
+            docker image prune -f

@@ -1,0 +1,75 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "AI assistant backend: LangGraph agent, RAG over docs, actions on mail/Notion/WhatsApp"
+readme = "README.md"
+authors = [
+    { name = "Julian Rodriguez Debandi", email = "jjulianrodriguez.96@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    # pydantic-settings pulls in python-dotenv itself for .env file support, so we don't
+    # need the standalone "dotenv" package the scaffold started with. That package name is
+    # a known trap: PyPI has both "dotenv" and "python-dotenv", both importable as `dotenv`,
+    # and only the latter is the actively maintained, widely-used one. One less thing to
+    # explain to future-us (or a reviewer reading the dependency list).
+    "pydantic-settings>=2.7.0",
+    "fastapi[standard]>=0.141.1",
+    "langchain>=1.3.15",
+    "langchain-google-genai>=4.3.3",
+    "langgraph>=1.2.11",
+    # --- persistence: SQLAlchemy 2.0 async ORM + asyncpg driver for runtime, Alembic for
+    # schema migrations. `sqlalchemy[asyncio]` pulls in `greenlet`, which SQLAlchemy's async
+    # engine needs to bridge asyncio and its underlying sync DBAPI calls under the hood.
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    # pgvector's Python package ships a SQLAlchemy `Vector` column type and registers the
+    # asyncpg/psycopg codecs needed to move numpy-style vectors in and out of Postgres.
+    # Added now (Phase 1) even though no vector columns exist yet, so the pgvector-enabled
+    # Postgres image and the extension migration are proven out before RAG work needs them.
+    "pgvector>=0.3.6",
+]
+
+# Dev-only tooling: linting, type checking, tests. Kept out of the runtime dependency set
+# (and therefore out of the production Docker image) via PEP 735 dependency groups, which
+# `uv` understands natively — `uv sync` installs both by default, `uv sync --no-dev` skips them.
+[dependency-groups]
+dev = [
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.25.0",
+    "httpx>=0.28.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+# E/F: pyflakes+pycodestyle core checks. I: import sorting (replaces isort). UP: pyupgrade,
+# flags old-style syntax so the codebase stays idiomatic for the pinned Python version.
+# B: flake8-bugbear, catches common correctness footguns (mutable default args, etc.).
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+# Third-party libs without inline type stubs would otherwise fail `strict` on import;
+# ignore missing stubs for those rather than disabling strict mode project-wide.
+disallow_untyped_defs = true
+# pydantic's plugin teaches mypy the actual runtime semantics of BaseModel/BaseSettings
+# fields — without it, strict mode sees `Settings()` called with no arguments and flags every
+# required field (database_url) as a missing constructor argument, even though
+# pydantic-settings is correctly filling it in from the environment. This is the standard,
+# documented fix rather than a workaround specific to this file.
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# If you push twice to the same PR before the first run finishes, the first run gets
+# cancelled instead of both running to completion — no point burning CI minutes on a diff
+# that's already been superseded.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # A real Postgres for the duration of the job, torn down automatically afterwards — not a
+    # separate always-on "CI database." Using the exact same `pgvector/pgvector:pg17` image as
+    # docker-compose.yml (not the plain `postgres` image) means the pgvector extension is
+    # actually installed here too, so `CREATE EXTENSION vector` in the first migration gets
+    # tested for real instead of assumed to work.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: backend
+        ports:
+          - 5432:5432
+        # GitHub Actions starts the service container in parallel with the job's own setup
+        # steps, not before them — without a healthcheck the first `alembic upgrade` or test
+        # could race a Postgres that's still initializing and fail flakily rather than for a
+        # real reason.
+        options: >-
+          --health-cmd "pg_isready -U postgres -d backend"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # The `postgres` service is reachable at localhost from the job's steps (GitHub Actions
+      # runs service containers on the runner's network, port-mapped like docker-compose's
+      # `ports:`) — this is the same host-side shape as the local DATABASE_URL in .env.example,
+      # deliberately, so there's exactly one DSN convention to remember across local/CI/VPS.
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/backend
+      ENVIRONMENT: ci
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # astral-sh/setup-uv installs the same `uv` version-pinned tool used locally and in the
+      # Dockerfile, and its built-in caching keys off uv.lock — a lockfile-unchanged rerun
+      # restores resolved wheels instead of re-downloading ~90 packages every push.
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      # Lint/format/type-check before the slower DB-dependent steps: if the diff has a style
+      # violation, fail in ~10s instead of waiting on Postgres to boot and tests to run first.
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Format check (ruff)
+        run: uv run ruff format --check .
+
+      - name: Type check (mypy)
+        run: uv run mypy src
+
+      # Applies the same migrations docker-compose's `migrate` service runs, against the same
+      # image, proving the migration chain is valid before anything merges to main — a broken
+      # migration should fail here, not surface for the first time during the VPS deploy.
+      - name: Run database migrations
+        run: uv run alembic upgrade head
+
+      - name: Run tests
+        run: uv run pytest
