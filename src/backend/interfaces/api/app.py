@@ -106,6 +106,13 @@ def create_app(
             # mean every request pays graph-construction cost and, worse, would be pointless
             # busywork since the topology never changes between requests.
             app.state.graph = build_graph(model, tools).compile(checkpointer=cp)
+            # The *unbound* model, separately from the graph — `model.bind_tools(tools)`
+            # happens inside build_graph()'s own closure (see graph.py) and isn't reachable
+            # from outside it. routes/messages.py needs a plain model instance too, for
+            # classifying a plain-text reply to a paused confirmation (see
+            # agent/confirmation.py) — reusing this one rather than constructing a second
+            # model avoids a second provider/API-key config just for that.
+            app.state.chat_model = model
             app.state.langfuse_enabled = configure_langfuse(settings)
 
             yield

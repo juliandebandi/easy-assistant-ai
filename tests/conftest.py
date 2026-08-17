@@ -56,10 +56,18 @@ class FakeNotionPort:
 
     def __init__(self) -> None:
         self.created: list[dict[str, str]] = []
+        self.search_results: list[dict[str, str]] = []
+        self.page_content: dict[str, str] = {}
 
     async def create_page(self, *, title: str, content: str) -> str:
         self.created.append({"title": title, "content": content})
         return f"https://notion.so/fake-page-{len(self.created)}"
+
+    async def search_pages(self, query: str) -> list[dict[str, str]]:
+        return self.search_results
+
+    async def get_page_content(self, page_id: str) -> str:
+        return self.page_content.get(page_id, "")
 
 
 @pytest.fixture

@@ -22,3 +22,13 @@ class NotionPort(Protocol):
         Returns the created page's URL, so a tool can relay it back to the user.
         """
         ...
+
+    async def search_pages(self, query: str) -> list[dict[str, str]]:
+        """Search pages by title/content. Returns cheap summaries — `{title, id, url}` per
+        result — never full page content, so a tool can list candidates without paying for
+        every match's content up front."""
+        ...
+
+    async def get_page_content(self, page_id: str) -> str:
+        """Fetch one specific page's full text content, flattened to plain text."""
+        ...

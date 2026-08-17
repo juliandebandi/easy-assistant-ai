@@ -26,6 +26,34 @@ def build_tools(*, notion_port: NotionPort, email_port: EmailPort) -> Sequence[B
         return f"Notion page created: {url}"
 
     @tool
+    async def search_notion_pages(query: str) -> str:
+        """Search Notion for pages matching a query. Returns titles and ids only, not full
+        content — call get_notion_page with a specific id once you know which page you need."""
+        results = await notion_port.search_pages(query)
+        if not results:
+            return "No matching Notion pages found."
+        return "\n".join(f"- {r['title']} (id: {r['id']}, url: {r['url']})" for r in results)
+
+    @tool
+    async def get_notion_page(page_id: str) -> str:
+        """Fetch the full text content of one specific Notion page by id. Use
+        search_notion_pages first to find the right id — don't guess one."""
+        content = await notion_port.get_page_content(page_id)
+        return content or "(this page has no text content)"
+
+    @tool
+    def start_new_conversation() -> str:
+        """Start a completely fresh conversation, discarding everything discussed on this
+        thread so far. Only call this when the user clearly asks to start over or forget the
+        current conversation — not for an ordinary change of topic within the same chat.
+        """
+        # No side effect here on purpose — a tool mid-run can't safely delete its own thread's
+        # checkpoint history out from under itself. routes/messages.py detects this tool by
+        # name in the finished result and performs the actual reset *after* this turn's reply
+        # is built, so the user still sees this acknowledgment before the thread goes empty.
+        return "Sure — let's start fresh! What would you like to talk about?"
+
+    @tool
     async def send_email(to: str, subject: str, body: str) -> str:
         """Send an email on the user's behalf. Requires human confirmation before sending —
         call this as soon as you have the recipient, subject, and body rather than waiting;
@@ -43,4 +71,10 @@ def build_tools(*, notion_port: NotionPort, email_port: EmailPort) -> Sequence[B
         await email_port.send(to, subject, body)
         return f"Email sent to {to}."
 
-    return [create_notion_page, send_email]
+    return [
+        create_notion_page,
+        search_notion_pages,
+        get_notion_page,
+        start_new_conversation,
+        send_email,
+    ]
