@@ -65,7 +65,13 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    command: ["alembic", "upgrade", "head"]
+    # Two setup steps chained with &&, both one-shot and both required before `app` can start:
+    # Alembic for our own SQLAlchemy-tracked schema, then LangGraph's checkpointer bootstrap
+    # (see infra/db/bootstrap_checkpointer.py) for its own internal tables, which Alembic has
+    # no model for and can't migrate. `sh -c` is needed here only because `&&`-chaining two
+    # commands requires a shell to interpret it — plain `command: [alembic, upgrade, head]`
+    # exec's a single binary directly with no shell involved.
+    command: ["sh", "-c", "alembic upgrade head && python -m backend.infra.db.bootstrap_checkpointer"]
     restart: "no"
 
   app:

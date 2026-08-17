@@ -48,6 +48,12 @@ jobs:
       # deliberately, so there's exactly one DSN convention to remember across local/CI/VPS.
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/backend
       ENVIRONMENT: ci
+      # A syntactically-present but fake value: Settings requires gemini_api_key (fail-fast
+      # validation — see config.py), but tests inject a FakeListChatModel (see
+      # tests/conftest.py) and never actually construct the real Gemini client, so this key's
+      # *value* is never used to make a network call. It only needs to exist so Settings()
+      # doesn't raise at startup.
+      GEMINI_API_KEY: ci-placeholder-not-a-real-key
 
     steps:
       - uses: actions/checkout@v4
@@ -78,6 +84,13 @@ jobs:
       # migration should fail here, not surface for the first time during the VPS deploy.
       - name: Run database migrations
         run: uv run alembic upgrade head
+
+      # Same reasoning as the migration step above, for LangGraph's checkpointer tables
+      # instead of our own Alembic-tracked schema — see bootstrap_checkpointer.py's docstring
+      # for why this can't just be another Alembic revision. /messages tests fail without it:
+      # the checkpointer has nowhere to persist conversation state.
+      - name: Set up LangGraph checkpointer tables
+        run: uv run python -m backend.infra.db.bootstrap_checkpointer
 
       - name: Run tests
         run: uv run pytest

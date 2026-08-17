@@ -17,6 +17,7 @@ dependencies = [
     "fastapi[standard]>=0.141.1",
     "langchain>=1.3.15",
     "langchain-google-genai>=4.3.3",
+    "langchain-openai>=0.3.0",
     "langgraph>=1.2.11",
     # --- persistence: SQLAlchemy 2.0 async ORM + asyncpg driver for runtime, Alembic for
     # schema migrations. `sqlalchemy[asyncio]` pulls in `greenlet`, which SQLAlchemy's async
@@ -29,6 +30,22 @@ dependencies = [
     # Added now (Phase 1) even though no vector columns exist yet, so the pgvector-enabled
     # Postgres image and the extension migration are proven out before RAG work needs them.
     "pgvector>=0.3.6",
+    # --- agent (Phase 2) ---
+    # LangGraph's own Postgres-backed checkpointer, so conversation state survives process
+    # restarts and is addressable by thread_id. It's built on psycopg (v3), not the asyncpg
+    # driver the rest of the app uses — that's a real, deliberate seam: reimplementing a
+    # SQLAlchemy/asyncpg-based checkpointer would mean maintaining our own copy of LangGraph's
+    # checkpoint serialization format instead of the battle-tested one it ships. See
+    # infra/db/checkpointer.py for where the two drivers meet.
+    "langgraph-checkpoint-postgres>=2.0.0",
+    "psycopg[binary,pool]>=3.2.0",
+    # Langfuse: OTel-based tracing for every graph run (router decisions, LLM calls, token
+    # usage/cost, latency per node) surfaced as a trace tree per conversation turn.
+    "langfuse>=3.0.0",
+    # --- actions (Actions phase) ---
+    # Official Notion SDK, used directly by infra/notion/adapter.py only — nothing above the
+    # ports layer (agent/tools.py, graph.py) imports it.
+    "notion-client>=3.1.0",
 ]
 
 # Dev-only tooling: linting, type checking, tests. Kept out of the runtime dependency set
