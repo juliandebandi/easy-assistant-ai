@@ -1,10 +1,12 @@
-"""POST /messages — the primary conversational entrypoint.
+"""POST /messages — the primary conversational entrypoint, plus POST /messages/audio for
+voice input.
 
 Text in, text out, one exchange at a time, over a `thread_id`-scoped conversation — plus one
 more shape since the Actions phase: a turn can pause instead of replying, when the agent wants
-to call `send_email` (see agent/tools.py's HITL gate). No audio yet (that's a channel-edge
-concern — see the architecture discussion: transcription happens before this endpoint is ever
-reached, so this route doesn't need to change when audio input is added).
+to call `send_email` (see agent/tools.py's HITL gate). Audio is a channel-edge concern, not a
+different conversational shape: transcription happens *before* either route reaches the shared
+turn logic below, so `_handle_turn()` (and therefore `/messages` itself) never needs to know
+whether a given turn's text originated as typing or speech.
 
 Confirming a paused thread is ordinary conversation, not a special API field — the caller just
 sends another `{text, thread_id}` like any other turn. `graph.aget_state(config)` is the single
@@ -20,7 +22,7 @@ coexisting with it. Only a clear approve/decline ever resumes.
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Form, HTTPException, Request, Response, UploadFile
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.types import Command
 from pydantic import BaseModel, model_validator
@@ -29,6 +31,11 @@ from backend.agent.confirmation import classify_reply
 from backend.infra.observability.langfuse import get_langfuse_handler
 
 router = APIRouter(tags=["messages"])
+
+# OpenAI's Whisper API hard-rejects anything larger — checked here, before the transcription
+# adapter is ever called, so an oversized upload fails with a clear 413 rather than an opaque
+# error surfacing from inside infra/transcription/whisper_adapter.py.
+_MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
 
 class MessageRequest(BaseModel):
@@ -62,10 +69,7 @@ class MessageResponse(BaseModel):
     pending_confirmation: PendingConfirmation | None = None
 
 
-@router.post("/messages")
-async def send_message(request: Request, body: MessageRequest) -> MessageResponse:
-    thread_id = body.thread_id or str(uuid.uuid4())
-
+async def _handle_turn(request: Request, thread_id: str, text: str) -> MessageResponse:
     # thread_id travels through `config`, not the graph state itself — LangGraph's
     # checkpointer keys all persistence off `config["configurable"]["thread_id"]`
     # automatically. It never needs to be a field on AgentState.
@@ -79,7 +83,7 @@ async def send_message(request: Request, body: MessageRequest) -> MessageRespons
     graph_input: Command[Any] | dict[str, list[HumanMessage]]
     if pending:
         pending_action = pending[0].value
-        decision = await classify_reply(request.app.state.chat_model, pending_action, body.text)
+        decision = await classify_reply(request.app.state.chat_model, pending_action, text)
         if decision.decision == "unclear":
             # Graph untouched — still paused on the exact same interrupt it was before this
             # request, per this module's docstring above.
@@ -92,7 +96,7 @@ async def send_message(request: Request, body: MessageRequest) -> MessageRespons
             )
         graph_input = Command(resume={"approved": decision.decision == "approve"})
     else:
-        graph_input = {"messages": [HumanMessage(content=body.text)]}
+        graph_input = {"messages": [HumanMessage(content=text)]}
 
     result = await graph.ainvoke(graph_input, config=config)
 
@@ -120,6 +124,35 @@ async def send_message(request: Request, body: MessageRequest) -> MessageRespons
         await graph.checkpointer.adelete_thread(thread_id)
 
     return MessageResponse(thread_id=thread_id, reply=reply)
+
+
+@router.post("/messages")
+async def send_message(request: Request, body: MessageRequest) -> MessageResponse:
+    thread_id = body.thread_id or str(uuid.uuid4())
+    return await _handle_turn(request, thread_id, body.text)
+
+
+@router.post("/messages/audio")
+async def send_audio_message(
+    request: Request, audio: UploadFile, thread_id: str | None = Form(None)
+) -> MessageResponse:
+    content = await audio.read()
+    if len(content) > _MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="audio file exceeds 25MB limit")
+
+    mime_type = audio.content_type or "application/octet-stream"
+    try:
+        text = await request.app.state.transcription_port.transcribe(content, mime_type=mime_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Same "no blank turns" rule MessageRequest enforces for typed text (see
+    # _text_is_not_blank above) — silence or unrecognizable audio shouldn't spend a graph run
+    # on an empty human turn.
+    if not text.strip():
+        raise HTTPException(status_code=422, detail="transcription produced no text")
+
+    return await _handle_turn(request, thread_id or str(uuid.uuid4()), text)
 
 
 @router.delete("/messages/{thread_id}", status_code=204)

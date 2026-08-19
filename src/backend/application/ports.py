@@ -32,3 +32,14 @@ class NotionPort(Protocol):
     async def get_page_content(self, page_id: str) -> str:
         """Fetch one specific page's full text content, flattened to plain text."""
         ...
+
+
+class TranscriptionPort(Protocol):
+    async def transcribe(self, audio: bytes, *, mime_type: str) -> str:
+        """Transcribe spoken audio to plain text, in whatever language it's spoken in.
+
+        No translation step — the caller's chat model is already multilingual and handles
+        response language as part of ordinary conversation, so this only ever converts
+        modality (audio -> text), never language.
+        """
+        ...

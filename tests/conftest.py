@@ -83,6 +83,25 @@ def email_port() -> MockEmailAdapter:
     return MockEmailAdapter()
 
 
+class FakeTranscriptionPort:
+    """Implements `TranscriptionPort` (structurally — no inheritance needed) with no network
+    call. Returns a fixed transcript regardless of the audio bytes given, and records every
+    call so tests can assert what was actually sent to it (mime type included)."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.transcript = "transcribed text"
+
+    async def transcribe(self, audio: bytes, *, mime_type: str) -> str:
+        self.calls.append({"audio": audio, "mime_type": mime_type})
+        return self.transcript
+
+
+@pytest.fixture
+def transcription_port() -> FakeTranscriptionPort:
+    return FakeTranscriptionPort()
+
+
 @pytest.fixture
 def checkpointer() -> BaseCheckpointSaver[str]:
     """An in-process, in-memory checkpointer instead of the real `AsyncPostgresSaver`.
@@ -106,6 +125,7 @@ async def app(
     checkpointer: BaseCheckpointSaver[str],
     notion_port: FakeNotionPort,
     email_port: MockEmailAdapter,
+    transcription_port: FakeTranscriptionPort,
 ) -> AsyncGenerator[FastAPI]:
     """A fully started app instance, lifespan included.
 
@@ -119,6 +139,7 @@ async def app(
         checkpointer=checkpointer,
         notion_port=notion_port,
         email_port=email_port,
+        transcription_port=transcription_port,
     )
     async with application.router.lifespan_context(application):
         yield application

@@ -63,15 +63,15 @@ class Settings(BaseSettings):
     # change. Kept as a plain setting rather than hardcoded in agent/llm.py for that reason.
     llm_model: str = "openai:gpt-4o-mini"
 
-    openai_api_key: SecretStr | None = None
+    # Required unconditionally, not just when llm_model picks OpenAI for chat — the Whisper
+    # transcription adapter (infra/transcription/whisper_adapter.py) always calls the OpenAI
+    # API for speech-to-text, independent of which provider is configured here.
+    openai_api_key: SecretStr
     gemini_api_key: SecretStr | None = None
 
     @model_validator(mode="after")
     def _validate_llm_api_keys(self) -> Settings:
-        is_openai = "openai" in self.llm_model or "gpt" in self.llm_model
         is_gemini = "google_genai" in self.llm_model or "gemini" in self.llm_model
-        if is_openai and self.openai_api_key is None:
-            raise ValueError("openai_api_key is required when using an OpenAI model")
         if is_gemini and self.gemini_api_key is None:
             raise ValueError("gemini_api_key is required when using a Gemini model")
         return self

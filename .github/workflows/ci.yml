@@ -48,12 +48,14 @@ jobs:
       # deliberately, so there's exactly one DSN convention to remember across local/CI/VPS.
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/backend
       ENVIRONMENT: ci
-      # A syntactically-present but fake value: Settings requires gemini_api_key (fail-fast
-      # validation — see config.py), but tests inject a FakeListChatModel (see
-      # tests/conftest.py) and never actually construct the real Gemini client, so this key's
-      # *value* is never used to make a network call. It only needs to exist so Settings()
-      # doesn't raise at startup.
+      # Syntactically-present but fake values: Settings requires these keys (fail-fast
+      # validation — see config.py), but tests inject mocks/fakes (see tests/conftest.py)
+      # and never actually construct real clients, so these values are never used to make real
+      # network calls. They only need to exist so Settings() doesn't raise at startup.
+      OPENAI_API_KEY: ci-placeholder-not-a-real-key
       GEMINI_API_KEY: ci-placeholder-not-a-real-key
+      NOTION_API_KEY: ci-placeholder-not-a-real-key
+      NOTION_PARENT_PAGE_ID: ci-placeholder-not-a-real-page-id
 
     steps:
       - uses: actions/checkout@v4

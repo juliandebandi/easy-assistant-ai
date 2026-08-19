@@ -20,7 +20,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from backend.agent.tools import build_tools
 from backend.infra.email.mock_adapter import MockEmailAdapter
 from backend.interfaces.api.app import create_app
-from tests.conftest import FakeNotionPort, ToolCallingFakeChatModel
+from tests.conftest import FakeNotionPort, FakeTranscriptionPort, ToolCallingFakeChatModel
 
 
 @pytest.fixture
@@ -134,6 +134,7 @@ async def _running_client(
         checkpointer=InMemorySaver(),
         notion_port=notion_port,
         email_port=email_port,
+        transcription_port=FakeTranscriptionPort(),
     )
     async with application.router.lifespan_context(application):
         transport = ASGITransport(app=application)

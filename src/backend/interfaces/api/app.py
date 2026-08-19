@@ -32,6 +32,9 @@ the first place — letting tests substitute real dependencies with cheap, deter
   seam is here regardless, so `send_email`'s human-in-the-loop gate (see agent/tools.py and
   routes/messages.py) can be tested deterministically against an adapter with an inspectable
   `.sent` list, the same way `checkpointer` lets state persistence be asserted on directly.
+- `transcription_port`: tests pass a fake `TranscriptionPort` instead of the real
+  `WhisperAdapter`, so `POST /messages/audio` can be tested without an OpenAI API key or a real
+  Whisper call. Same DI seam, same reason.
 """
 
 import logging
@@ -46,12 +49,13 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from backend.agent.graph import build_graph
 from backend.agent.llm import get_chat_model
 from backend.agent.tools import build_tools
-from backend.application.ports import EmailPort, NotionPort
+from backend.application.ports import EmailPort, NotionPort, TranscriptionPort
 from backend.config import get_settings
 from backend.infra.db.checkpointer import get_checkpointer_dsn
 from backend.infra.email.mock_adapter import MockEmailAdapter
 from backend.infra.notion.adapter import build_notion_adapter
 from backend.infra.observability.langfuse import configure_langfuse
+from backend.infra.transcription.whisper_adapter import build_whisper_adapter
 from backend.interfaces.api.routes import health, messages
 
 
@@ -61,6 +65,7 @@ def create_app(
     checkpointer: BaseCheckpointSaver[str] | None = None,
     notion_port: NotionPort | None = None,
     email_port: EmailPort | None = None,
+    transcription_port: TranscriptionPort | None = None,
 ) -> FastAPI:
     settings = get_settings()
     # Without this, every `logger.info()`/`.debug()` call anywhere in this app's own code is
@@ -97,6 +102,11 @@ def create_app(
             notion_port if notion_port is not None else build_notion_adapter(settings)
         )
         resolved_email_port = email_port if email_port is not None else MockEmailAdapter()
+        resolved_transcription_port = (
+            transcription_port
+            if transcription_port is not None
+            else build_whisper_adapter(settings)
+        )
         tools = build_tools(notion_port=resolved_notion_port, email_port=resolved_email_port)
 
         async with resolve_checkpointer() as cp:
@@ -113,6 +123,7 @@ def create_app(
             # agent/confirmation.py) — reusing this one rather than constructing a second
             # model avoids a second provider/API-key config just for that.
             app.state.chat_model = model
+            app.state.transcription_port = resolved_transcription_port
             app.state.langfuse_enabled = configure_langfuse(settings)
 
             yield

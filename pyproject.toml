@@ -46,6 +46,10 @@ dependencies = [
     # Official Notion SDK, used directly by infra/notion/adapter.py only — nothing above the
     # ports layer (agent/tools.py, graph.py) imports it.
     "notion-client>=3.1.0",
+    # Official OpenAI SDK, used directly by infra/transcription/whisper_adapter.py for Whisper
+    # audio transcription — independent of langchain-openai's own (transitive) dependency on
+    # it, since chat and transcription are separate concerns that happen to share a provider.
+    "openai>=1.59.0",
 ]
 
 # Dev-only tooling: linting, type checking, tests. Kept out of the runtime dependency set
